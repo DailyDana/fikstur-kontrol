@@ -1,0 +1,25 @@
+[project]
+name = "fixture-check"
+version = "0.1.0"
+description = "Functional verification for checking and locating fixtures on top of cad-khana"
+requires-python = ">=3.13,<3.14"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+# cad-khana is single-maintainer, pre-alpha: pinned to verified commit (run tests before upgrading)
+dependencies = ["cad-khana @ git+https://github.com/cyberchitta/cad-khana@99ef3863e92b7c167e43e65f3026e2dd4aac3374", "build123d>=0.13"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fixture_check"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.hatch.metadata]
+allow-direct-references = true
