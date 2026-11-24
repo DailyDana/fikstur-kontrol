@@ -44,6 +44,8 @@ class _Pin:
     min_shoulder: float
     angle_tol: float = 5.0
     min_relief: float = 0.5
+    datum_ref: str = "MMC"
+    max_pin_play: float | None = None
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,7 @@ class Fixture:
     _flushes: tuple[_Flush, ...] = ()
     _moving: tuple[str, ...] = ()
     _known: tuple[tuple[str, str, str], ...] = ()
-    _removal: tuple[tuple[float, float, float], float] | None = None
+    _removal: tuple[tuple[float, float, float], float, bool] | None = None
     _gauges: tuple[_Gauge, ...] = ()
     _base: str | None = None
     _accepted_floating: tuple[tuple[str, str], ...] = ()
@@ -154,15 +156,24 @@ class Fixture:
         return replace(self, _datum=_DatumA(pads, n_2_1, min_height, min_seating))
 
     def round_pin(self, name, *, hole: Tolerance | None = None, pin: Tolerance | None = None,
-                  max_shift: float | None = None, min_shoulder: float = 1.0) -> Fixture:
+                  max_shift: float | None = None, min_shoulder: float = 1.0, datum_ref: str = "MMC",
+                  max_pin_play: float | None = None) -> Fixture:
+        """`datum_ref`: how the drawing references this datum feature, "MMC" or "RFS". A fixed pin simulates an MMC
+        datum; for RFS a warn: record shows the shift a fixed pin allows (an expanding pin would remove it).
+        `max_pin_play`: limit on play with the hole at MMC (hole MMC - smallest pin), the shift the pin adds."""
+        _check_datum_ref(datum_ref)
         return replace(self, _pins=self._pins + (
-            _Pin(self._name(name), False, hole, pin, max_shift, min_shoulder),))
+            _Pin(self._name(name), False, hole, pin, max_shift, min_shoulder, datum_ref=datum_ref,
+                 max_pin_play=max_pin_play),))
 
     def diamond_pin(self, name, *, hole: Tolerance | None = None, pin: Tolerance | None = None,
                     max_shift: float | None = None, min_shoulder: float = 1.0,
-                    angle_tol: float = 5.0, min_relief: float = 0.5) -> Fixture:
+                    angle_tol: float = 5.0, min_relief: float = 0.5, datum_ref: str = "MMC",
+                    max_pin_play: float | None = None) -> Fixture:
+        _check_datum_ref(datum_ref)
         return replace(self, _pins=self._pins + (
-            _Pin(self._name(name), True, hole, pin, max_shift, min_shoulder, angle_tol, min_relief),))
+            _Pin(self._name(name), True, hole, pin, max_shift, min_shoulder, angle_tol, min_relief,
+                 datum_ref, max_pin_play),))
 
     def clamp(self, pad, *, group: str | None = None, pad_margin: float = 0.0, arm=(),
               pivot=None, opening: float = 100.0, step: float = 1.0) -> Fixture:
@@ -212,8 +223,10 @@ class Fixture:
     def base(self, name: str) -> Fixture:
         return replace(self, _base=self._name(name))
 
-    def removal(self, *, direction=(0, 0, 1), distance: float) -> Fixture:
-        return replace(self, _removal=(tuple(direction), float(distance)))
+    def removal(self, *, direction=(0, 0, 1), distance: float, exit: bool = True) -> Fixture:
+        """Part lifts `distance` mm along `direction` without touching fixed bodies. With `exit` it must then go on
+        until it is past every fixture body (catches overhead brackets, gauge towers and the like)."""
+        return replace(self, _removal=(tuple(direction), float(distance), bool(exit)))
 
     def go_nogo_gauge(self, name, *, direction, stroke: float, go_dia: float, retract: float = 0.0,
                       nogo_dia: float | None = None, hole: Tolerance | None = None,
@@ -330,9 +343,12 @@ class Fixture:
             a = self._flush_check(a, part, f)
         a = self._connectivity(a, others)
         if self._removal:
-            direction, distance = self._removal
-            v = Vector(*direction).normalized() * distance
+            direction, distance, exit_ = self._removal
+            d = Vector(*direction).normalized()
+            v = d * distance
             a = _clear_path(a, fixed, part, v, name=f"removal_path:{distance:g}mm", step=self.path_step)
+            if exit_:
+                a = self._removal_exit(a, part, fixed, d, distance)
         for m in self._gauges:
             a = self._gauge_check(a, part, m)
         for c in self._clamps:
@@ -342,6 +358,21 @@ class Fixture:
                 a = a.assert_scalar(f"warn:K9:skipped:{c.pad}", 0.0,
                                     detail="no pivot provided; clamp opening arc not checked")
         return a
+
+    def _removal_exit(self, a: Assembly, part: Part, fixed, d: Vector, distance: float) -> Assembly:
+        def extent(shape):
+            bb = shape.bounding_box()
+            corners = [Vector(x, y, z) for x in (bb.min.X, bb.max.X) for y in (bb.min.Y, bb.max.Y)
+                       for z in (bb.min.Z, bb.max.Z)]
+            return min(c.dot(d) for c in corners), max(c.dot(d) for c in corners)
+        part_lo, _ = extent(part)
+        far = max(extent(self.bodies[n])[1] for n in fixed) if fixed else part_lo
+        rest = far - part_lo - distance + 1.0
+        if rest <= 0:
+            return a.assert_scalar("removal_exit_mm", 0.0, le=0.0,
+                                   detail=f"after {distance:g} mm the part is already past every fixed body")
+        start = part.moved(_translation(d * distance))
+        return _clear_path(a, fixed, start, d * rest, name="removal_exit", step=max(self.path_step, rest / 100.0))
 
     # -- F1, F2: datum A ---------------------------------------------------------------------
     def _datum_checks(self, a: Assembly, part: Part):
@@ -517,6 +548,15 @@ class Fixture:
                 name = f"{prefix}:datum_shift_mm" if p.max_shift is not None else f"warn:{prefix}:datum_shift_mm"
                 a = a.assert_scalar(name, fit.max_clearance, le=p.max_shift,
                                     detail="diametral play available for the part to shift around the pin in the loosest condition")
+                play = p.hole.lower - p.pin.lower
+                name = f"{prefix}:pin_play_at_mmc_mm" if p.max_pin_play is not None else f"warn:{prefix}:pin_play_at_mmc_mm"
+                a = a.assert_scalar(name, play, le=p.max_pin_play,
+                                    detail=f"hole at MMC {p.hole.lower:.3f} - smallest pin {p.pin.lower:.3f}: shift the pin adds "
+                                           f"beyond the hole tolerance ({p.hole.upper - p.hole.lower:.3f})")
+                if p.datum_ref == "RFS":
+                    a = a.assert_scalar(f"warn:{prefix}:rfs_datum_fixed_pin_shift_mm", fit.max_clearance,
+                                        detail="the drawing references this datum RFS; a fixed pin lets the part shift by this "
+                                               "much, an expanding (centering) pin would simulate the datum exactly")
             if p.diamond:
                 a = a.assert_scalar(f"{prefix}:diamond_relief_mm", b["width_perp"] - b["width_bc"], ge=p.min_relief,
                                     detail=f"width along B→C {b['width_bc']:.3f}, perpendicular width {b['width_perp']:.3f}; a cylindrical pin is not a diamond pin")
@@ -710,6 +750,11 @@ class Fixture:
 
 
 # --- module-level helpers -------------------------------------------------------------------
+
+def _check_datum_ref(datum_ref: str) -> None:
+    if datum_ref not in ("MMC", "RFS"):
+        raise ValueError("datum_ref must be 'MMC' or 'RFS'")
+
 
 def _clear_path(a: Assembly, others, body, travel: Vector, *, name: str, step: float) -> Assembly:
     """assert_clear_of along a straight path: exact sweep when cad-khana can do it, otherwise stepped copies.

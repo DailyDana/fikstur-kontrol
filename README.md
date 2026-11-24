@@ -86,12 +86,13 @@ is reported without turning the run red.
 | `F1` | Exactly 3 pads in contact (or 3+ with `n_2_1=True`), coplanar pads, shortest altitude of support triangle, pad seating ratio | Contact patches extracted from geometry |
 | `F2` (warn) | Whether the center of mass projected along gravity falls inside the support polygon, and margin to the edge in mm | `gravity=`, enforced with `strict_stability=True` |
 | `F3` | Whether each clamp's pressure center lies inside a pad's outer boundary, presses opposite to the pad, and has solid part material in between; unclamped pad count (warn) | Contact centroid projected onto pad face |
-| `pin:` | Pin cylindrical section spans full part thickness, CAD clearance, shoulder gap (including tapered shoulder), CAD diameter in tolerance zone, worst-case clearance (ISO 286) and with CAD axis offset deducted, roundness of round pin, datum shift | Pin cross-section in part thickness band |
+| `pin:` | Pin cylindrical section spans full part thickness, CAD clearance, shoulder gap (including tapered shoulder), CAD diameter in tolerance zone, worst-case clearance (ISO 286) and with CAD axis offset deducted, roundness of round pin, datum shift, pin play with the hole at MMC (`max_pin_play`), and for a datum referenced RFS (`datum_ref="RFS"`) the shift a fixed pin allows | Pin cross-section in part thickness band |
 | `pin:...diamond_*`, `slot_orientation` | Diamond pin relief along B→C and contacting direction perpendicular to B→C; part slot parallel to B→C; fails if a cylindrical pin is declared as diamond | Cross-section widths, slot end half-cylinders |
 | `F6` | Constrained degrees of freedom = 6 (3 pads + round 2 + diamond 1) and pin layout is one round + one diamond; pin type is also verified geometrically (roundness, diamond relief) | Count + cross-section |
 | `gap`, `flush` | Contour gap within tolerance; block face coplanar with part face in the given direction (same-facing normals; opposite-facing with `opposed=True`) | Distance and plane offset |
 | `K8` | Every fixture body is connected to the base by contact (or a guided fit within `connection_tol`) | Contact graph |
-| `removal_path` | Part can be removed along the given direction without obstruction | cad-khana `swept` (exact sweep) |
+| `removal_path` | Part can be removed along the given direction without obstruction | cad-khana `swept` (exact sweep; sampled for torus/freeform faces) |
+| `removal_exit` | After `distance`, the part keeps going until it is past every fixture body: no overhead bracket, gauge tower or bushing above it (`removal(..., exit=False)` turns it off) | Same sweep, to the far end of the fixture |
 | `K9` | Clamp arm (pad + `arm` bodies) rotates `opening` degrees around `pivot` without colliding with the part or fixed bodies | Rotated in `step` (1°) increments checking volume interference; sampled |
 | `gauge:` | GO/NO-GO gauge path is clear including part and bushing, part has a coaxial hole that GO passes completely through, GO = virtual condition, NO-GO = LMC (at MMC), bushing is coaxial with sufficient L/D; anything missing fails | Sweep and cylinder measurements |
 

@@ -299,3 +299,30 @@ def test_sampled_removal_path_still_finds_obstruction():
     g["Part"] = _filleted_part()
     g["Obstacle"] = s._box(-10, 10, -15, 80, 60, 65) + s._box(-10, 10, 70, 80, 20, 65)  # bridge over the boss
     assert "clear_of:removal_path:30mm>=0" in failed(s.fixture(g))
+
+
+def test_pin_play_at_mmc_and_limit():
+    r = results(s.fixture())
+    assert r["warn:pin:Pin_B:pin_play_at_mmc_mm"].value == pytest.approx(9.0 - 8.960)
+    fx = s.fixture()
+    fx = replace(fx, _pins=tuple(replace(p, max_pin_play=0.02) if p.name == "Pin_B" else p for p in fx._pins))
+    assert "pin:Pin_B:pin_play_at_mmc_mm" in failed(fx)
+
+
+def test_rfs_datum_reference_warns():
+    fx = s.fixture()
+    fx = replace(fx, _pins=tuple(replace(p, datum_ref="RFS") if p.name == "Pin_B" else p for p in fx._pins))
+    r = results(fx)
+    assert r["warn:pin:Pin_B:rfs_datum_fixed_pin_shift_mm"].value == pytest.approx(9.10 - 8.960)
+    with pytest.raises(ValueError):
+        s.fixture().round_pin("Pin_B", hole=s.HOLE, pin=s.PIN, datum_ref="LMC")
+
+
+def test_removal_exit_catches_overhead_obstacle():
+    g = s.bodies()
+    # bridge 40 mm above the part: beyond the 30 mm removal distance, but still in the way out
+    g["Overhead"] = s._box(-10, 10, -10, 80, 85, 90) + s._box(-10, 10, 70, 80, 20, 90)
+    f = failed(s.fixture(g))
+    assert "clear_of:removal_path:30mm>=0" not in f
+    assert "clear_of:removal_exit>=0" in f
+

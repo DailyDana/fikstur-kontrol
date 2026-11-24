@@ -15,7 +15,8 @@ the NIST drawing (inches):
 - Datum C: Ø.238 +.005/-.001 corner hole, position Ø.020 at MMC to A|B.
 - 2X Ø.238 +.005/-.001 corner holes, position Ø.023 at MMC to A|B|C.
 The drawing note asks for exactly this restraint: A against its simulator, B and C engaged by simulators, load
-applied to hold A. Which two corners are B and C is read from the drawing's isometric view; the fixture is checked
+applied to hold A. B and C are referenced RFS (no MMC modifier), which strictly calls for expanding pins; this fixture
+uses fixed pins and reports the resulting shift (0.19 mm diametral) as a warning. Which two corners are B and C is read from the drawing's isometric view; the fixture is checked
 for the choice below (B and C on the same long edge, 285.75 mm apart).
 
 Fixture concept: the part sits as modelled, datum A down, on three hardened pads under the side walls. A round pin
@@ -125,8 +126,10 @@ def fixture(f: Fixture | None = None, pivots: dict | None = None) -> Fixture:
         f = Fixture.from_bodies(bodies, part=PART)
     f = (f.base("Base_Plate")
          .datum_a(list(PADS))
-         .round_pin("Pin_B_Round", hole=HOLE, pin=PIN)
-         .diamond_pin("Pin_C_Diamond", hole=HOLE, pin=PIN))
+         # the drawing references B and C regardless of feature size (no MMC modifier), so the report notes the
+         # shift a fixed pin allows; expanding pins would simulate these datums exactly
+         .round_pin("Pin_B_Round", hole=HOLE, pin=PIN, datum_ref="RFS")
+         .diamond_pin("Pin_C_Diamond", hole=HOLE, pin=PIN, datum_ref="RFS"))
     for name, pivot in pivots.items():
         f = f.clamp(f"{name}_Tip", arm=[f"{name}_Arm", f"{name}_Handle"], pivot=pivot, opening=100)
     return (f.removal(direction=(0, 0, 1), distance=60)
