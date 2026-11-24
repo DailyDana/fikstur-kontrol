@@ -57,6 +57,14 @@ class _Clamp:
     pivot: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None
     opening: float = 100.0
     step: float = 1.0
+    against: str = "A"
+
+
+@dataclass(frozen=True)
+class _SideDatum:
+    label: str                 # "B" (secondary, two rest buttons) or "C" (tertiary, one rest button)
+    pads: tuple[str, ...]
+    min_spacing: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -110,6 +118,8 @@ class Fixture:
     bodies: dict[str, Part]
     part: str
     _datum: _DatumA | None = None
+    _datum_b: _SideDatum | None = None
+    _datum_c: _SideDatum | None = None
     _pins: tuple[_Pin, ...] = ()
     _clamps: tuple[_Clamp, ...] = ()
     _contours: tuple[_Contour, ...] = ()
@@ -155,6 +165,19 @@ class Fixture:
         pads = tuple(self._name(p) for p in pads)
         return replace(self, _datum=_DatumA(pads, n_2_1, min_height, min_seating))
 
+    def datum_b(self, pads, *, min_spacing: float = 30.0) -> Fixture:
+        """Planar secondary datum: exactly two side rest buttons touching the datum B face (2 DOF).
+        Use instead of a round pin when B is a face. `min_spacing`: smallest distance between the two buttons."""
+        pads = tuple(self._name(x) for x in pads)
+        if len(pads) != 2:
+            raise ValueError("datum_b takes exactly two rest buttons")
+        return replace(self, _datum_b=_SideDatum("B", pads, min_spacing))
+
+    def datum_c(self, pad) -> Fixture:
+        """Planar tertiary datum: one side rest button touching the datum C face (1 DOF).
+        Use instead of a diamond pin when C is a face."""
+        return replace(self, _datum_c=_SideDatum("C", (self._name(pad),)))
+
     def round_pin(self, name, *, hole: Tolerance | None = None, pin: Tolerance | None = None,
                   max_shift: float | None = None, min_shoulder: float = 1.0, datum_ref: str = "MMC",
                   max_pin_play: float | None = None) -> Fixture:
@@ -176,7 +199,9 @@ class Fixture:
                  datum_ref, max_pin_play),))
 
     def clamp(self, pad, *, group: str | None = None, pad_margin: float = 0.0, arm=(),
-              pivot=None, opening: float = 100.0, step: float = 1.0) -> Fixture:
+              pivot=None, opening: float = 100.0, step: float = 1.0, against: str = "A") -> Fixture:
+        if against not in ("A", "B", "C"):
+            raise ValueError("against must be 'A', 'B' or 'C'")
         """Clamp pad. `group` (pattern) and `arm` (names) mark opening bodies as moving.
         If `pivot=((x, y, z), (dx, dy, dz))` is given, the pad and `arm` bodies are rotated
         around that axis by `opening` degrees (sign sets direction) in `step` increments;
@@ -190,7 +215,7 @@ class Fixture:
                 raise ValueError("opening must be non-zero and step must be positive")
             if not arm and group is None:
                 raise ValueError("when pivot is given, rotating bodies must be declared via arm= or group=")
-        c = _Clamp(self._name(pad), group, pad_margin, arm, pivot, float(opening), float(step))
+        c = _Clamp(self._name(pad), group, pad_margin, arm, pivot, float(opening), float(step), against)
         return replace(self, _clamps=self._clamps + (c,))
 
     def contour(self, name, *, gap: float, tol: float = 0.01, uniformity: float | None = None) -> Fixture:
@@ -281,6 +306,9 @@ class Fixture:
         assign(self.part, "part")
         for p in (self._datum.pads if self._datum else ()):
             assign(p, "datum pad")
+        for d in (self._datum_b, self._datum_c):
+            for p in (d.pads if d else ()):
+                assign(p, f"datum {d.label} rest button")
         for p in self._pins:
             assign(p.name, "locating pin")
         for c in self._clamps:
@@ -312,6 +340,8 @@ class Fixture:
 
         # Expected contacts and pins; every remaining body must be clear
         contacting = set(self._datum.pads if self._datum else ()) | {c.pad for c in self._clamps}
+        for d in (self._datum_b, self._datum_c):
+            contacting |= set(d.pads if d else ())
         pins = {p.name for p in self._pins}
         for name in sorted(contacting):
             a = a.assert_tangent_contact(P, name, name=f"contact:{name}")
@@ -329,14 +359,19 @@ class Fixture:
             if frame is None:
                 raise ValueError("datum_a must be defined before pin checks")
             a, frame, pin_info = self._pin_checks(a, part, frame)
+        side = {}
+        if self._datum_b or self._datum_c:
+            if frame is None:
+                raise ValueError("datum_a must be defined before datum_b / datum_c")
+            a, side = self._side_datum_checks(a, part, frame)
         if self._datum:
-            a = self._dof_checks(a, patches, pin_info)
+            a = self._dof_checks(a, patches, pin_info, side)
         if self._clamps:
             if not patches:
                 a = a.assert_scalar("warn:F3:skipped", 0.0,
                                     detail="datum_a not defined or no pad contact; clamp-to-pad alignment skipped")
             else:
-                a = self._clamp_checks(a, part, patches, frame)
+                a = self._clamp_checks(a, part, patches, frame, side)
         for k in self._contours:
             a = self._contour_check(a, part, k)
         for f in self._flushes:
@@ -433,12 +468,15 @@ class Fixture:
         return a, frame, patches
 
     # -- F3: clamp-over-pad alignment --------------------------------------------------------
-    def _clamp_checks(self, a: Assembly, part: Part, patches: dict, frame) -> Assembly:
+    def _clamp_checks(self, a: Assembly, part: Part, patches: dict, frame, side: dict | None = None) -> Assembly:
         clamped: set[str] = set()
         for c in self._clamps:
             y = geo.contact_patch(self.bodies[c.pad], part)
             if y is None:
                 continue  # contact assertion is already red
+            if c.against != "A":
+                a = self._pusher_check(a, c, y, (side or {}).get(c.against, {}))
+                continue
             prefix = f"F3:clamp_over_pad_mm:{c.pad}"
             opposed = {pad: py for pad, py in patches.items() if y.normal.dot(py.normal) < -0.999}
             if not opposed:
@@ -457,6 +495,35 @@ class Fixture:
         unclamped = sorted(set(patches) - clamped)
         return a.assert_scalar("warn:F3:unclamped_pads", float(len(unclamped)),
                                detail=f"pads without a clamp above them: {unclamped}" if unclamped else "every pad has a clamp")
+
+    def _pusher_check(self, a: Assembly, c: _Clamp, y, buttons: dict) -> Assembly:
+        name = f"F3:pusher_over_datum_{c.against}_mm:{c.pad}"
+        if not buttons:
+            return a.assert_scalar(name, -math.inf, ge=c.pad_margin,
+                                   detail=f"datum {c.against} rest buttons not declared or not in contact")
+        opposed = [b for b in buttons.values() if y.normal.dot(b.normal) < -0.999]
+        if len(opposed) != len(buttons):
+            return a.assert_scalar(name, -math.inf, ge=c.pad_margin,
+                                   detail=f"pusher does not press opposite to the datum {c.against} buttons")
+        radius = min(math.sqrt(b.area / math.pi) for b in opposed)
+        n = opposed[0].normal
+        if len(opposed) == 2:
+            p1, p2 = opposed[0].center, opposed[1].center
+            length = (p2 - p1).length
+            u = (p2 - p1) / length
+            d = y.center - p1
+            t = d.dot(u)
+            off = d - u * t
+            off = off - n * off.dot(n)
+            margin = min(t, length - t, radius - off.length)
+            detail = (f"push line between the two buttons: {t:.1f} of {length:.1f} mm along, {off.length:.2f} mm off "
+                      f"their line (button radius {radius:.1f}); outside = the push tilts the part off a button")
+        else:
+            d = y.center - opposed[0].center
+            off = d - n * d.dot(n)
+            margin = radius - off.length
+            detail = f"push line {off.length:.2f} mm from the button centre (button radius {radius:.1f})"
+        return a.assert_scalar(name, margin, ge=c.pad_margin, detail=detail)
 
     # -- K9: clamp opening arc ---------------------------------------------------------------
     def _clamp_opening(self, a: Assembly, part: Part, c: _Clamp, moving: set[str]) -> Assembly:
@@ -571,17 +638,61 @@ class Fixture:
         return a, frame, info
 
     # -- F6: degrees of freedom --------------------------------------------------------------
-    def _dof_checks(self, a: Assembly, patches: dict, pin_info: dict) -> Assembly:
+    def _dof_checks(self, a: Assembly, patches: dict, pin_info: dict, side: dict) -> Assembly:
         primary = min(3, len(patches))
         round_count = sum(1 for p in self._pins if not p.diamond)
         diamond_count = sum(1 for p in self._pins if p.diamond)
-        total = primary + 2 * round_count + diamond_count
-        detail = f"primary {primary} + round pin {round_count}x2 + diamond pin {diamond_count}x1 = {total}"
+        b_dof = min(2, len(side.get("B", {}))) if self._datum_b else 0
+        c_dof = min(1, len(side.get("C", {}))) if self._datum_c else 0
+        total = primary + 2 * round_count + diamond_count + b_dof + c_dof
+        detail = (f"primary {primary} + round pin {round_count}x2 + diamond pin {diamond_count}x1"
+                  f" + datum B face {b_dof} + datum C face {c_dof} = {total}")
         a = a.assert_scalar("F6:constrained_dof", float(total), ge=6, le=6,
                             detail=detail + "; <6 under-constrained, >6 over-constrained")
-        layout_ok = (round_count, diamond_count) == (1, 1)
+        two = round_count + (1 if self._datum_b else 0)
+        one = diamond_count + (1 if self._datum_c else 0)
+        layout_ok = (two, one) == (1, 1)
         return a.assert_scalar("F6:pin_layout", 1.0 if layout_ok else 0.0, ge=1.0,
-                               detail=f"expected one round + one diamond pin; declared: {round_count} round, {diamond_count} diamond")
+                               detail=("expected one 2-DOF locator (round pin or datum B face) and one 1-DOF locator "
+                                       f"(diamond pin or datum C face); declared: {round_count} round pin, "
+                                       f"{diamond_count} diamond pin, datum B face {bool(self._datum_b)}, "
+                                       f"datum C face {bool(self._datum_c)}"))
+
+    # -- F1B, F1C: planar secondary and tertiary datums ----------------------------------------
+    def _side_datum_checks(self, a: Assembly, part: Part, frame):
+        side = {}
+        n_a = frame.n
+        for d in (self._datum_b, self._datum_c):
+            if d is None:
+                continue
+            got = {}
+            for pad in d.pads:
+                y = geo.contact_patch(self.bodies[pad], part)
+                if y is not None:
+                    got[pad] = y
+            side[d.label] = got
+            want = len(d.pads)
+            a = a.assert_scalar(f"F1{d.label}:buttons_in_contact", float(len(got)), ge=want, le=want,
+                                detail=f"datum {d.label} rest buttons in contact: {sorted(got)} of {list(d.pads)}")
+            if len(got) < want:
+                continue
+            normals = [y.normal for y in got.values()]
+            a = a.assert_scalar(f"F1{d.label}:perpendicular_to_A_error_deg", max(_perp_error(x, n_a) for x in normals),
+                                le=0.1, detail=f"datum {d.label} face must be perpendicular to datum A")
+            if d.label == "B":
+                y1, y2 = list(got.values())
+                a = a.assert_scalar("F1B:button_normal_deviation_deg", _angle(y1.normal, y2.normal), le=0.1,
+                                    detail="both datum B buttons must touch the same plane")
+                a = a.assert_scalar("F1B:button_offset_mm", abs((y2.center - y1.center).dot(y1.normal)), le=0.01,
+                                    detail="the two buttons' contact planes must coincide")
+                a = a.assert_scalar("F1B:button_spacing_mm", (y2.center - y1.center).length, ge=d.min_spacing,
+                                    detail="close buttons give a short lever against rotation about the datum A normal")
+            if d.label == "C" and side.get("B") and len(side["B"]) == 2:
+                n_b = next(iter(side["B"].values())).normal
+                a = a.assert_scalar("F1C:perpendicular_to_B_error_deg", _perp_error(normals[0], n_b), le=0.1,
+                                    detail="datum C face must be perpendicular to datum B")
+        return a, side
+
 
     # -- K4 gap ------------------------------------------------------------------------------
     def _contour_check(self, a: Assembly, part: Part, k: _Contour) -> Assembly:
@@ -751,6 +862,15 @@ class Fixture:
 
 # --- module-level helpers -------------------------------------------------------------------
 
+def _angle(u: Vector, v: Vector) -> float:
+    return math.degrees(math.acos(max(-1.0, min(1.0, u.normalized().dot(v.normalized())))))
+
+
+def _perp_error(u: Vector, v: Vector) -> float:
+    """How far from 90 degrees the angle between u and v is."""
+    return abs(90.0 - _angle(u, v))
+
+
 def _check_datum_ref(datum_ref: str) -> None:
     if datum_ref not in ("MMC", "RFS"):
         raise ValueError("datum_ref must be 'MMC' or 'RFS'")
@@ -767,6 +887,7 @@ def _clear_path(a: Assembly, others, body, travel: Vector, *, name: str, step: f
         path = swept(body, travel)
     except ValueError as exc:
         from math import ceil
+
         from build123d import Compound
         n = max(1, ceil(travel.length / step))
         copies = [body.moved(_translation(travel * (i / n))) for i in range(n + 1)]

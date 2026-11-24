@@ -64,10 +64,32 @@ khana show outputs/fixture_spec/mechanism.json --failed
   A = flange face, B and C = Ø.238 corner holes, 2X corner holes with position Ø.023 at MMC. Two fault variants: a
   clamp pivot above the clamp tip (the tip swings into the tray wall when opening) and a loose locating pin.
 
+  ![NIST FTC-08 checking fixture](docs/nist_ftc08_fixture.png)
+
 NIST FTC-08 model: "PMI Fully-Toleranced Test Case 8", NIST MBE PMI Validation and Conformance Testing project,
 https://www.nist.gov/el/systems-integration-division-73400/mbe-pmi-validation-and-conformance-testing. NIST states
 the test cases, CAD models and STEP files can be used without any restrictions; the geometry-only STEP file is
 included unchanged.
+
+### Planar datums B and C
+
+When datums B and C are faces rather than holes (typical for castings and machined blocks), declare side rest
+buttons instead of pins, and side clamps (pushers) that press the part against them:
+
+```python
+f = (Fixture.from_bodies(bodies, part="Housing")
+     .base("Base_Plate")
+     .datum_a(["Pad_1", "Pad_2", "Pad_3"])
+     .datum_b(["Button_B1", "Button_B2"])          # two buttons on the datum B face
+     .datum_c("Button_C1")                         # one button on the datum C face
+     .clamp("Clamp_1_Tip", arm=["Clamp_1_Arm"], pivot=((0, -80, 60), (1, 0, 0)))   # holds A down
+     .clamp("Pusher_B_Tip", against="B")           # pushes the part onto the B buttons
+     .clamp("Pusher_C_Tip", against="C"))
+```
+
+A round pin can stand in for datum B or a diamond pin for datum C (for example a round pin in a hole plus one button on
+an end face); F6 requires exactly one 2-DOF locator (round pin or datum B face) and one 1-DOF locator (diamond pin or
+datum C face).
 
 When the input is a STEP file, every body must have a name. You can also pass build123d shapes via
 `Fixture.from_bodies({"name": shape, ...}, part=...)`. `Fixture` is immutable; `add_body` and `replace_body` return a
@@ -85,10 +107,11 @@ is reported without turning the run red.
 | `contact`, `clear` | Part touches only datum pads and clamp pads; stays at least `min_clearance` (0.1 mm) away from every other body | cad-khana tangent contact and distance |
 | `F1` | Exactly 3 pads in contact (or 3+ with `n_2_1=True`), coplanar pads, shortest altitude of support triangle, pad seating ratio | Contact patches extracted from geometry |
 | `F2` (warn) | Whether the center of mass projected along gravity falls inside the support polygon, and margin to the edge in mm | `gravity=`, enforced with `strict_stability=True` |
-| `F3` | Whether each clamp's pressure center lies inside a pad's outer boundary, presses opposite to the pad, and has solid part material in between; unclamped pad count (warn) | Contact centroid projected onto pad face |
+| `F3` | Whether each clamp's pressure center lies inside a pad's outer boundary, presses opposite to the pad, and has solid part material in between; unclamped pad count (warn). Pushers (`against="B"`/`"C"`): push line opposite to the buttons, between the two B buttons (within their radius of the line joining them) or onto the C button | Contact centroid projected onto pad face |
+| `F1B`, `F1C` | Planar datum B: both buttons touch, coplanar, perpendicular to A, spacing ≥ `min_spacing`. Planar datum C: button touches, perpendicular to A and B | Contact patches |
 | `pin:` | Pin cylindrical section spans full part thickness, CAD clearance, shoulder gap (including tapered shoulder), CAD diameter in tolerance zone, worst-case clearance (ISO 286) and with CAD axis offset deducted, roundness of round pin, datum shift, pin play with the hole at MMC (`max_pin_play`), and for a datum referenced RFS (`datum_ref="RFS"`) the shift a fixed pin allows | Pin cross-section in part thickness band |
 | `pin:...diamond_*`, `slot_orientation` | Diamond pin relief along B→C and contacting direction perpendicular to B→C; part slot parallel to B→C; fails if a cylindrical pin is declared as diamond | Cross-section widths, slot end half-cylinders |
-| `F6` | Constrained degrees of freedom = 6 (3 pads + round 2 + diamond 1) and pin layout is one round + one diamond; pin type is also verified geometrically (roundness, diamond relief) | Count + cross-section |
+| `F6` | Constrained degrees of freedom = 6 (3 pads + round pin or datum B face 2 + diamond pin or datum C face 1) and the layout has one locator of each kind; pin type is also verified geometrically (roundness, diamond relief) | Count + cross-section |
 | `gap`, `flush` | Contour gap within tolerance; block face coplanar with part face in the given direction (same-facing normals; opposite-facing with `opposed=True`) | Distance and plane offset |
 | `K8` | Every fixture body is connected to the base by contact (or a guided fit within `connection_tol`) | Contact graph |
 | `removal_path` | Part can be removed along the given direction without obstruction | cad-khana `swept` (exact sweep; sampled for torus/freeform faces) |
