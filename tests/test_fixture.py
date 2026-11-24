@@ -326,3 +326,32 @@ def test_removal_exit_catches_overhead_obstacle():
     assert "clear_of:removal_path:30mm>=0" not in f
     assert "clear_of:removal_exit>=0" in f
 
+
+
+def _stepped_gauge_fixture(stroke, nogo_end="stepped"):
+    """Ø6 hole in a side flange (X -60..-58); gauge along +X: GO Ø4 at X -80..-67, NO-GO Ø6.5 step behind it."""
+    from build123d import Pos, Rot
+    g = s.bodies()
+    g["Part"] = g["Part"] + s._box(-60, -58, -10, 10, 42, 60)
+    g["Part"] = g["Part"] - Pos(-59, 0, 52) * Rot(0, 90, 0) * s.Cylinder(3, 4)
+    g["GO"] = (Pos(-73.5, 0, 52) * Rot(0, 90, 0) * s.Cylinder(2, 13)
+               + Pos(-85, 0, 52) * Rot(0, 90, 0) * s.Cylinder(3.25, 10))
+    return s.fixture(g).go_nogo_gauge("GO", direction=(1, 0, 0), stroke=stroke, go_dia=4.0, nogo_dia=6.5,
+                                      nogo_end=nogo_end)
+
+
+def test_stepped_nogo_must_reach_the_hole():
+    r = results(_stepped_gauge_fixture(10))
+    x = r["gauge:GO:nogo_reaches_hole_mm"]
+    assert not x.passed and x.value == pytest.approx(10.0, abs=0.01)
+    r = results(_stepped_gauge_fixture(19.5))
+    assert r["gauge:GO:nogo_reaches_hole_mm"].passed
+    assert r["gauge:GO:nogo_reaches_hole_mm"].value == pytest.approx(0.5, abs=0.01)
+
+
+def test_reversed_nogo_is_a_warn_record():
+    r = results(_stepped_gauge_fixture(10, "reversed"))
+    assert "gauge:GO:nogo_reaches_hole_mm" not in r
+    assert "warn:gauge:GO:nogo_reversed" in r
+    with pytest.raises(ValueError):
+        _stepped_gauge_fixture(10, "sideways")

@@ -58,6 +58,8 @@ class _Clamp:
     opening: float = 100.0
     step: float = 1.0
     against: str = "A"
+    retract: float | None = None
+    retract_direction: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,9 @@ class _SideDatum:
     label: str                 # "B" (secondary, two rest buttons) or "C" (tertiary, one rest button)
     pads: tuple[str, ...]
     min_spacing: float = 0.0
+    width: Tolerance | None = None     # size feature whose centre plane is the datum (center_plane=True)
+    center_plane: bool = False
+    max_shift: float | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +104,8 @@ class _Gauge:
     gauge_tol: float
     bushing: str | None
     min_bushing_ld: float
+    nogo_end: str = "stepped"
+    nogo_reach: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -165,18 +172,27 @@ class Fixture:
         pads = tuple(self._name(p) for p in pads)
         return replace(self, _datum=_DatumA(pads, n_2_1, min_height, min_seating))
 
-    def datum_b(self, pads, *, min_spacing: float = 30.0) -> Fixture:
+    def datum_b(self, pads, *, min_spacing: float = 30.0, center_plane: bool = False,
+                width: Tolerance | None = None, max_shift: float | None = None) -> Fixture:
         """Planar secondary datum: exactly two side rest buttons touching the datum B face (2 DOF).
-        Use instead of a round pin when B is a face. `min_spacing`: smallest distance between the two buttons."""
+        Use instead of a round pin when B is a face. `min_spacing`: smallest distance between the two buttons.
+
+        `center_plane=True`: the drawing attaches datum B to a width (size) dimension, so the datum is the centre
+        plane of that width, not the face the buttons touch. Give the width as `width`; the record
+        `F1B:center_plane_shift_mm` is half its tolerance (how far the centre plane moves between parts on fixed
+        buttons). With `max_shift` it is a limit, otherwise a warn: record. Self-centring jaws remove the shift."""
         pads = tuple(self._name(x) for x in pads)
         if len(pads) != 2:
             raise ValueError("datum_b takes exactly two rest buttons")
-        return replace(self, _datum_b=_SideDatum("B", pads, min_spacing))
+        _check_center_plane(center_plane, width, max_shift)
+        return replace(self, _datum_b=_SideDatum("B", pads, min_spacing, width, center_plane, max_shift))
 
-    def datum_c(self, pad) -> Fixture:
+    def datum_c(self, pad, *, center_plane: bool = False, width: Tolerance | None = None,
+                max_shift: float | None = None) -> Fixture:
         """Planar tertiary datum: one side rest button touching the datum C face (1 DOF).
-        Use instead of a diamond pin when C is a face."""
-        return replace(self, _datum_c=_SideDatum("C", (self._name(pad),)))
+        Use instead of a diamond pin when C is a face. `center_plane`, `width`, `max_shift` as for datum_b."""
+        _check_center_plane(center_plane, width, max_shift)
+        return replace(self, _datum_c=_SideDatum("C", (self._name(pad),), 0.0, width, center_plane, max_shift))
 
     def round_pin(self, name, *, hole: Tolerance | None = None, pin: Tolerance | None = None,
                   max_shift: float | None = None, min_shoulder: float = 1.0, datum_ref: str = "MMC",
@@ -199,13 +215,21 @@ class Fixture:
                  datum_ref, max_pin_play),))
 
     def clamp(self, pad, *, group: str | None = None, pad_margin: float = 0.0, arm=(),
-              pivot=None, opening: float = 100.0, step: float = 1.0, against: str = "A") -> Fixture:
-        if against not in ("A", "B", "C"):
-            raise ValueError("against must be 'A', 'B' or 'C'")
+              pivot=None, opening: float = 100.0, step: float = 1.0, against: str = "A",
+              retract: float | None = None, retract_direction=None) -> Fixture:
         """Clamp pad. `group` (pattern) and `arm` (names) mark opening bodies as moving.
         If `pivot=((x, y, z), (dx, dy, dz))` is given, the pad and `arm` bodies are rotated
         around that axis by `opening` degrees (sign sets direction) in `step` increments;
-        each step is checked for interference with the part and fixed bodies (K9)."""
+        each step is checked for interference with the part and fixed bodies (K9).
+        A clamp or pusher that pulls straight back instead takes `retract` (mm): the bodies move that far away
+        from the part (along the contact normal, or `retract_direction`) and the path is checked (K9).
+        With removal declared, the part must also leave past every clamp in its open position (K10)."""
+        if against not in ("A", "B", "C"):
+            raise ValueError("against must be 'A', 'B' or 'C'")
+        if pivot is not None and retract is not None:
+            raise ValueError("give either pivot (swing) or retract (straight pull-back), not both")
+        if retract is not None and retract <= 0:
+            raise ValueError("retract must be positive")
         if group is not None:
             self._pattern(group)
         arm = tuple(self._name(x) for x in arm)
@@ -215,7 +239,9 @@ class Fixture:
                 raise ValueError("opening must be non-zero and step must be positive")
             if not arm and group is None:
                 raise ValueError("when pivot is given, rotating bodies must be declared via arm= or group=")
-        c = _Clamp(self._name(pad), group, pad_margin, arm, pivot, float(opening), float(step), against)
+        c = _Clamp(self._name(pad), group, pad_margin, arm, pivot, float(opening), float(step), against,
+                   float(retract) if retract is not None else None,
+                   tuple(retract_direction) if retract_direction is not None else None)
         return replace(self, _clamps=self._clamps + (c,))
 
     def contour(self, name, *, gap: float, tol: float = 0.01, uniformity: float | None = None) -> Fixture:
@@ -257,13 +283,19 @@ class Fixture:
                       nogo_dia: float | None = None, hole: Tolerance | None = None,
                       position_tol: float | None = None, modifier: str = "MMC",
                       gauge_tol: float = 0.005, bushing: str | None = None,
-                      min_bushing_ld: float = 1.5) -> Fixture:
+                      min_bushing_ld: float = 1.5, nogo_end: str = "stepped", nogo_reach: float = 1.0) -> Fixture:
+        """`nogo_end`: "stepped" (NO-GO step on the same guided shank, behind GO: at the end of the stroke it must
+        arrive within `nogo_reach` mm of the hole mouth) or "reversed" (double-ended gauge turned round by hand;
+        only a warn: record, the NO-GO stroke is not simulated)."""
         if modifier not in ("MMC", "RFS"):
             raise ValueError("modifier must be 'MMC' or 'RFS'")
+        if nogo_end not in ("stepped", "reversed"):
+            raise ValueError("nogo_end must be 'stepped' or 'reversed'")
         if hole is not None and modifier == "MMC" and position_tol is None:
             raise ValueError("position_tol is required for an MMC gauge (GO = hole MMC - position tolerance)")
         g = _Gauge(self._name(name), tuple(direction), retract, stroke, go_dia, nogo_dia, hole, position_tol,
-                   modifier, gauge_tol, self._name(bushing) if bushing else None, min_bushing_ld)
+                   modifier, gauge_tol, self._name(bushing) if bushing else None, min_bushing_ld,
+                   nogo_end, float(nogo_reach))
         return replace(self, _gauges=self._gauges + (g,))
 
     # -- helpers
@@ -377,31 +409,88 @@ class Fixture:
         for f in self._flushes:
             a = self._flush_check(a, part, f)
         a = self._connectivity(a, others)
+        # open positions of clamps and pushers (K10): the part has to leave past them, not past their closed pose
+        opened: dict[str, Shape] = {}
+        for c in self._clamps:
+            pose = self._open_pose(part, c)
+            if pose is None:
+                if self._removal:
+                    a = a.assert_scalar(f"warn:K10:open_pose_unknown:{c.pad}", 0.0,
+                                        detail="no pivot or retract given; removal ignores this clamp")
+                continue
+            for name, shape in pose.items():
+                opened.setdefault(f"open:{name}", shape)
+        for name, shape in opened.items():
+            a = a.with_part(name, shape)
         if self._removal:
             direction, distance, exit_ = self._removal
             d = Vector(*direction).normalized()
             v = d * distance
-            a = _clear_path(a, fixed, part, v, name=f"removal_path:{distance:g}mm", step=self.path_step)
+            obstacles = fixed + list(opened)
+            a = _clear_path(a, obstacles, part, v, name=f"removal_path:{distance:g}mm", step=self.path_step)
             if exit_:
-                a = self._removal_exit(a, part, fixed, d, distance)
+                a = self._removal_exit(a, part, obstacles, d, distance, {**self.bodies, **opened})
         for m in self._gauges:
             a = self._gauge_check(a, part, m)
         for c in self._clamps:
             if c.pivot is not None:
                 a = self._clamp_opening(a, part, c, moving)
+            elif c.retract is not None:
+                a = self._clamp_retract(a, part, c, moving)
             else:
                 a = a.assert_scalar(f"warn:K9:skipped:{c.pad}", 0.0,
-                                    detail="no pivot provided; clamp opening arc not checked")
+                                    detail="no pivot or retract provided; clamp opening not checked")
         return a
 
-    def _removal_exit(self, a: Assembly, part: Part, fixed, d: Vector, distance: float) -> Assembly:
+    def _clamp_bodies(self, c: _Clamp) -> list[str]:
+        names = [c.pad, *c.arm]
+        if c.group:
+            names += [x for x in self._pattern(c.group) if x not in names]
+        return names
+
+    def _retract_vector(self, part: Part, c: _Clamp) -> Vector | None:
+        if c.retract_direction is not None:
+            return Vector(*c.retract_direction).normalized() * c.retract
+        y = geo.contact_patch(self.bodies[c.pad], part)
+        if y is None:
+            return None
+        n = Vector(y.normal).normalized()
+        away = self.bodies[c.pad].center(CenterOf.BOUNDING_BOX) - part.center(CenterOf.BOUNDING_BOX)
+        return (n if away.dot(n) > 0 else -n) * c.retract
+
+    def _open_pose(self, part: Part, c: _Clamp) -> dict[str, Shape] | None:
+        names = self._clamp_bodies(c)
+        if c.pivot is not None:
+            axis = Axis(c.pivot[0], c.pivot[1])
+            return {n: self.bodies[n].rotate(axis, c.opening) for n in names}
+        if c.retract is not None:
+            v = self._retract_vector(part, c)
+            if v is None:
+                return None
+            return {n: self.bodies[n].moved(_translation(v)) for n in names}
+        return None
+
+    def _clamp_retract(self, a: Assembly, part: Part, c: _Clamp, moving: set[str]) -> Assembly:
+        name = f"K9:clamp_retract:{c.pad}"
+        v = self._retract_vector(part, c)
+        if v is None:
+            return a.assert_scalar(name, 0.0, ge=1.0,
+                                   detail="pad not in contact with the part; retract direction unknown")
+        targets = [self.part] + [x for x in self.bodies if x != self.part and x not in moving]
+        for body in self._clamp_bodies(c):
+            a = _clear_path(a, targets, self.bodies[body], v, name=f"{name}:{body}", step=self.path_step)
+        return a
+
+    def _removal_exit(self, a: Assembly, part: Part, fixed, d: Vector, distance: float,
+                      shapes=None) -> Assembly:
         def extent(shape):
             bb = shape.bounding_box()
             corners = [Vector(x, y, z) for x in (bb.min.X, bb.max.X) for y in (bb.min.Y, bb.max.Y)
                        for z in (bb.min.Z, bb.max.Z)]
             return min(c.dot(d) for c in corners), max(c.dot(d) for c in corners)
         part_lo, _ = extent(part)
-        far = max(extent(self.bodies[n])[1] for n in fixed) if fixed else part_lo
+        shapes = shapes or self.bodies
+        far = max(extent(shapes[n])[1] for n in fixed) if fixed else part_lo
         rest = far - part_lo - distance + 1.0
         if rest <= 0:
             return a.assert_scalar("removal_exit_mm", 0.0, le=0.0,
@@ -672,6 +761,8 @@ class Fixture:
                     got[pad] = y
             side[d.label] = got
             want = len(d.pads)
+            if d.center_plane:
+                a = _center_plane_record(a, d)
             a = a.assert_scalar(f"F1{d.label}:buttons_in_contact", float(len(got)), ge=want, le=want,
                                 detail=f"datum {d.label} rest buttons in contact: {sorted(got)} of {list(d.pads)}")
             if len(got) < want:
@@ -806,18 +897,20 @@ class Fixture:
                           and 2 * f.radius > go_dia
                           and _distance_to_axis(Vector(f.axis_of_rotation.position), go_axis, direction)
                           <= (2 * f.radius - go_dia) / 2 + 1e-6]
+            hole_mouth = None
             if not hole_faces:
                 a = a.assert_scalar(f"{prefix}:hole_not_found", 0.0, ge=1.0,
                                     detail="no hole in the part coaxial with GO that GO can pass through")
             else:
                 hp = [Vector(v).dot(direction) for f in hole_faces for v in f.vertices()]
                 h0, h1 = min(hp), max(hp)
+                hole_mouth = h0
                 margin = min(go_tip - h1, h0 - go_start)
                 a = a.assert_scalar(f"{prefix}:go_covers_hole_mm", margin, ge=0.0,
                                     detail=f"at end of stroke GO cylinder {go_start:.2f}..{go_tip:.2f}, "
                                            f"part hole Ø{2 * hole_faces[0].radius:.3f} {h0:.2f}..{h1:.2f} (along direction)")
         else:
-            go_dia = None
+            go_dia, hole_mouth, shift = None, None, 0.0
             a = a.assert_scalar(f"{prefix}:go_cylinder_not_found", 0.0, ge=1.0, detail=f"no Ø{m.go_dia} cylinder found")
 
         nogo_dia = None
@@ -828,6 +921,17 @@ class Fixture:
             if nogo_dia is None:
                 a = a.assert_scalar(f"{prefix}:nogo_cylinder_not_found", 0.0, ge=1.0,
                                     detail=f"no Ø{m.nogo_dia} (±0.05) cylinder on gauge axis")
+            elif m.nogo_end == "reversed":
+                a = a.assert_scalar(f"warn:{prefix}:nogo_reversed", 0.0,
+                                    detail="double-ended gauge: the NO-GO end is tried by hand, stroke not simulated")
+            elif hole_mouth is not None:
+                # stepped gauge: the NO-GO step follows GO and must arrive at the hole mouth within the stroke
+                lead = max(Vector(v).dot(direction) for f in nf for v in f.vertices()) + shift
+                gap = hole_mouth - lead
+                a = a.assert_scalar(f"{prefix}:nogo_reaches_hole_mm", gap, le=m.nogo_reach,
+                                    detail=f"at end of stroke the NO-GO step ends {gap:.2f} mm before the hole mouth "
+                                           f"(allowed {m.nogo_reach:g}); farther = NO-GO never tries the hole. "
+                                           "Lengthen the stroke or use nogo_end='reversed'")
 
         # F7 gauge diameters
         if m.hole is not None:
@@ -869,6 +973,25 @@ def _angle(u: Vector, v: Vector) -> float:
 def _perp_error(u: Vector, v: Vector) -> float:
     """How far from 90 degrees the angle between u and v is."""
     return abs(90.0 - _angle(u, v))
+
+
+def _check_center_plane(center_plane: bool, width, max_shift) -> None:
+    if (width is not None or max_shift is not None) and not center_plane:
+        raise ValueError("width / max_shift only apply with center_plane=True")
+
+
+def _center_plane_record(a: Assembly, d) -> Assembly:
+    label = d.label
+    if d.width is None:
+        return a.assert_scalar(f"warn:F1{label}:center_plane_datum", 0.0,
+                               detail=f"datum {label} is a centre plane but fixed buttons locate one face; "
+                                      "give width= to report the shift, or use self-centring jaws")
+    shift = 0.5 * (d.width.upper - d.width.lower)
+    detail = (f"datum {label} is the centre plane of a width {d.width.lower:.3f}..{d.width.upper:.3f}; buttons on "
+              f"one face let it move {shift:.3f} mm between parts (self-centring jaws remove this)")
+    if d.max_shift is None:
+        return a.assert_scalar(f"warn:F1{label}:center_plane_shift_mm", shift, detail=detail)
+    return a.assert_scalar(f"F1{label}:center_plane_shift_mm", shift, le=d.max_shift, detail=detail)
 
 
 def _check_datum_ref(datum_ref: str) -> None:

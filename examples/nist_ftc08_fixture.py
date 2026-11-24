@@ -134,7 +134,8 @@ def fixture(f: Fixture | None = None, pivots: dict | None = None) -> Fixture:
         f = f.clamp(f"{name}_Tip", arm=[f"{name}_Arm", f"{name}_Handle"], pivot=pivot, opening=100)
     return (f.removal(direction=(0, 0, 1), distance=60)
             .go_nogo_gauge("Gauge_GO_NOGO", direction=(0, 0, 1), retract=20, stroke=20, go_dia=GO, nogo_dia=NOGO,
-                           hole=HOLE, position_tol=POS_2X, bushing="Gauge_Bushing"))
+                           hole=HOLE, position_tol=POS_2X, bushing="Gauge_Bushing",
+                           nogo_end="reversed"))  # NO-GO behind the collar: pull the gauge and try it by hand
 
 
 _BODIES, _PIVOTS = build_bodies()

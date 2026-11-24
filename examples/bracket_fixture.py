@@ -48,7 +48,8 @@ def fixture(f: Fixture | None = None) -> Fixture:
         .removal(direction=(0, 0, 1), distance=65)
         .go_nogo_gauge("Gec_Gecmez_Pim_GO750_NOGO810", direction=(0, -1, 0), retract=10, stroke=10,
                        go_dia=7.50, nogo_dia=8.10, hole=FLANGE_HOLE, position_tol=0.40,
-                       bushing="Kilavuz_Burc_DIN172A_12F7")
+                       bushing="Kilavuz_Burc_DIN172A_12F7",
+                       nogo_end="reversed")  # NO-GO sits behind the stop collar: pull the pin and try it by hand
     )
 
 
