@@ -26,14 +26,17 @@ def fixture(f: Fixture | None = None) -> Fixture:
     f = f or Fixture.step(STEP, part=PART)
     return (
         f.base("Taban_Plakasi_Al5083_20mm")
-        .datum_a(["Datum_A_Pedi_A1_OnSol", "Datum_A_Pedi_A2_OnSag", "Datum_A_Pedi_A3_Arka"])
+        .datum_a(["Datum_A_Pedi_A1_ArkaSol", "Datum_A_Pedi_A2_ArkaSag", "Datum_A_Pedi_A3_On"])
         .round_pin("Datum_B_Yuvarlak_Pim", hole=HOLE_B, pin=PIN)
         .diamond_pin("Datum_C_Elmas_Pim", hole=SLOT_C, pin=PIN)
-        # clamp bases are fixed (seated on the base plate); arm, pad and handle swing open
+        # one toggle clamp over each pad; clamp bases are fixed, arm, pad and handle swing open.
+        # The rear clamps come in from the sides so their arms clear the bracket's return tab.
         .clamp("Mandalli_Klemp_Sol_Pabuc", arm=["Mandalli_Klemp_Sol_Kol", "Mandalli_Klemp_Sol_Elcik"],
-               pivot=((-42, -66, 102), (1, 0, 0)), opening=100)
+               pivot=((-88, 24, 102), (0, -1, 0)), opening=100)
         .clamp("Mandalli_Klemp_Sag_Pabuc", arm=["Mandalli_Klemp_Sag_Kol", "Mandalli_Klemp_Sag_Elcik"],
-               pivot=((42, -66, 102), (1, 0, 0)), opening=100)
+               pivot=((88, 24, 102), (0, 1, 0)), opening=100)
+        .clamp("Mandalli_Klemp_On_Pabuc", arm=["Mandalli_Klemp_On_Kol", "Mandalli_Klemp_On_Elcik"],
+               pivot=((0, -66, 102), (1, 0, 0)), opening=100)
         .contour("Kontur_Blogu_Sol_3mm_Flush", gap=3.0)
         .contour("Kontur_Blogu_Sag_3mm_Flush", gap=3.0)
         .contour("Kontur_Blogu_Kulak_3mm_Flush", gap=3.0)
@@ -74,7 +77,7 @@ def reversed_diamond():
 
 
 def clamp_off_pad():
-    """Left clamp pad shifted 14 mm forward: presses the sheet where there is no support pad."""
+    """Left clamp pad shifted 14 mm towards the front: presses the sheet where there is no support pad."""
     f = _base()
     pad = f.bodies["Mandalli_Klemp_Sol_Pabuc"].moved(Location((0, -14, 0)))
     return fixture(f.replace_body("Mandalli_Klemp_Sol_Pabuc", pad)).assembly()

@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: |
+          uv venv --python 3.13
+          uv pip install -e . pytest
+      - name: Example fixture check
+        run: cd examples && ../.venv/bin/khana check bracket_fixture.py
+      - name: Tests
+        run: .venv/bin/python -m pytest -q -p no:warnings

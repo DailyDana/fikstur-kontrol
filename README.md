@@ -1,5 +1,7 @@
 # fixture-check
 
+[![tests](https://github.com/DailyDana/fikstur-kontrol/actions/workflows/tests.yml/badge.svg)](https://github.com/DailyDana/fikstur-kontrol/actions/workflows/tests.yml)
+
 A small Python package that automatically verifies checking and locating fixtures. Built on top of
 [cad-khana](https://github.com/cyberchitta/cad-khana): you declare the role of each body in the fixture (part, datum
 pads, locating pins, clamps, contour blocks, gauge), and the package builds both cad-khana assertions and
