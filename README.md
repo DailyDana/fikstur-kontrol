@@ -54,8 +54,20 @@ khana check fixture_spec.py
 khana show outputs/fixture_spec/mechanism.json --failed
 ```
 
-Full example: [examples/bracket_fixture.py](examples/bracket_fixture.py) (sheet-metal bracket checking fixture and
-seven intentional fault variants).
+## Examples
+
+- [examples/bracket_fixture.py](examples/bracket_fixture.py): sheet-metal bracket checking fixture loaded from a STEP
+  assembly (28 bodies, three toggle clamps, contour blocks, bushing-guided GO/NO-GO pin) and seven intentional fault
+  variants.
+- [examples/nist_ftc08_fixture.py](examples/nist_ftc08_fixture.py): fixture built in code around a real machined part,
+  the NIST MBE PMI test case FTC-08 (311 x 223 x 48 mm tray). Datums and hole tolerances come from the NIST drawing:
+  A = flange face, B and C = Ø.238 corner holes, 2X corner holes with position Ø.023 at MMC. Two fault variants: a
+  clamp pivot above the clamp tip (the tip swings into the tray wall when opening) and a loose locating pin.
+
+NIST FTC-08 model: "PMI Fully-Toleranced Test Case 8", NIST MBE PMI Validation and Conformance Testing project,
+https://www.nist.gov/el/systems-integration-division-73400/mbe-pmi-validation-and-conformance-testing. NIST states
+the test cases, CAD models and STEP files can be used without any restrictions; the geometry-only STEP file is
+included unchanged.
 
 When the input is a STEP file, every body must have a name. You can also pass build123d shapes via
 `Fixture.from_bodies({"name": shape, ...}, part=...)`. `Fixture` is immutable; `add_body` and `replace_body` return a
@@ -87,6 +99,9 @@ is reported without turning the run red.
 
 - Nominal geometry is checked. Tolerances are accounted for only in pin-hole fits and gauge diameters; there is no
   tolerance stack-up.
+- Removal and gauge paths use cad-khana's exact sweep when every face is a plane, cylinder, cone or sphere. Parts
+  with fillets on curved edges (torus faces) or freeform surfaces fall back to copies of the body every `path_step`
+  mm (default 1.0); a `warn:...:sampled_step_mm` record says so.
 - Gauge motion is checked only as a straight stroke. Clamp opening (K9) is sampled: a thin obstacle between two steps
   could be missed; reduce `step` if needed. Pass only the moving parts (arm, pad, handle) to `clamp(group=...)`; if a
   fixed base matches the pattern, the removal path check will ignore it.
@@ -100,8 +115,8 @@ is reported without turning the run red.
 python -m pytest -q -p no:warnings
 ```
 
-Passing and failing cases for every check on a synthetic fixture, ISO 286 values, and the seven faulty variants of the
-real bracket fixture (`examples/bracket_fixture_assembly.step`).
+Passing and failing cases for every check on a synthetic fixture, ISO 286 values, the seven faulty variants of the
+bracket fixture (`examples/bracket_fixture_assembly.step`) and the NIST FTC-08 fixture with its two faulty variants.
 
 ## License
 

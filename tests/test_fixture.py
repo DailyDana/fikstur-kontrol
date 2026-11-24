@@ -276,3 +276,26 @@ def test_clamp_pivot_without_arm_raises_and_skipped_warning():
     with pytest.raises(ValueError):
         f.clamp("Clamp_Pad", pivot=((0, 0, 0), (1, 0, 0)))
     assert "warn:K9:skipped:Clamp_Pad" in results(s.fixture())
+
+
+def _filleted_part():
+    """Synthetic part plus a boss with a filleted rim: the fillet is a torus face, so no exact sweep exists."""
+    from build123d import Axis, fillet
+    boss = s._cylinder(0, -10, 42, 47, 5)
+    boss = fillet(boss.edges().sort_by(Axis.Z)[-1], 1.0)
+    return s.part() + boss
+
+
+def test_removal_path_falls_back_to_sampling_on_torus_faces():
+    g = s.bodies()
+    g["Part"] = _filleted_part()
+    r = results(s.fixture(g))
+    assert r["warn:removal_path:30mm:sampled_step_mm"].value == pytest.approx(1.0)
+    assert r["clear_of:removal_path:30mm>=0"].passed
+
+
+def test_sampled_removal_path_still_finds_obstruction():
+    g = s.bodies()
+    g["Part"] = _filleted_part()
+    g["Obstacle"] = s._box(-10, 10, -15, 80, 60, 65) + s._box(-10, 10, 70, 80, 20, 65)  # bridge over the boss
+    assert "clear_of:removal_path:30mm>=0" in failed(s.fixture(g))

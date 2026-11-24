@@ -119,6 +119,7 @@ class Fixture:
     _base: str | None = None
     _accepted_floating: tuple[tuple[str, str], ...] = ()
     connection_tol: float = 0.05  # mm; a guided fit with clearance up to this still counts as connected
+    path_step: float = 1.0  # mm; sampling step for removal/gauge paths when an exact sweep is not possible
     min_clearance: float = 0.1
     gravity: tuple[float, float, float] | None = None
     strict_stability: bool = False
@@ -331,7 +332,7 @@ class Fixture:
         if self._removal:
             direction, distance = self._removal
             v = Vector(*direction).normalized() * distance
-            a = a.assert_clear_of(fixed, swept(part, v), name=f"removal_path:{distance:g}mm")
+            a = _clear_path(a, fixed, part, v, name=f"removal_path:{distance:g}mm", step=self.path_step)
         for m in self._gauges:
             a = self._gauge_check(a, part, m)
         for c in self._clamps:
@@ -635,9 +636,8 @@ class Fixture:
                                    detail="no cylindrical face along the gauge direction")
         axis_point = cylinders[0][1]
         start = body.moved(_translation(-direction * m.retract))
-        path = swept(start, direction * m.stroke)
         others = [x for x in self.bodies if x != m.name]
-        a = a.assert_clear_of(others, path, name=f"{prefix}:path_clear")
+        a = _clear_path(a, others, start, direction * m.stroke, name=f"{prefix}:path_clear", step=self.path_step)
 
         # GO cylinder must pass completely through the hole at the end of the stroke
         go_faces = [f for f in body.faces() if f.geom_type == GeomType.CYLINDER
@@ -710,6 +710,27 @@ class Fixture:
 
 
 # --- module-level helpers -------------------------------------------------------------------
+
+def _clear_path(a: Assembly, others, body, travel: Vector, *, name: str, step: float) -> Assembly:
+    """assert_clear_of along a straight path: exact sweep when cad-khana can do it, otherwise stepped copies.
+
+    cad-khana's swept() is exact only for planes, cylinders, cones and spheres. Real machined parts have fillets
+    (torus faces) and freeform surfaces; for those the path is approximated by copies of the body every ``step`` mm,
+    and a warn: record says so (an obstacle thinner than ``step`` between two copies could be missed).
+    """
+    try:
+        path = swept(body, travel)
+    except ValueError as exc:
+        from math import ceil
+        from build123d import Compound
+        n = max(1, ceil(travel.length / step))
+        copies = [body.moved(_translation(travel * (i / n))) for i in range(n + 1)]
+        path = Compound(copies)
+        kinds = str(exc).split("has ")[-1].split(" faces")[0]
+        a = a.assert_scalar(f"warn:{name}:sampled_step_mm", travel.length / n,
+                            detail=f"path sampled with {n + 1} copies (body has {kinds} faces; exact sweep not possible)")
+    return a.assert_clear_of(others, path, name=name)
+
 
 def _translation(v: Vector):
     from build123d import Location
